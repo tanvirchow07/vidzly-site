@@ -1439,6 +1439,9 @@ function escAttr(s){
 }
 function clipCardHTML(c, withActions=true){
   const t = escAttr(c.title);
+  const downloadAttr = c.downloadUrl
+    ? `onclick="window.open('${c.downloadUrl}','_blank')"`
+    : `onclick="toast('success','Short downloaded')"`;
   return `
   <div class="card clip-card">
     <div class="clip-video js-open-clip" data-title="${t}" style="cursor:pointer;">
@@ -1459,7 +1462,7 @@ function clipCardHTML(c, withActions=true){
       ${withActions ? `<div class="clip-actions">
         <button class="btn btn-ghost js-open-clip" data-title="${t}">Preview</button>
         <button class="btn btn-ghost" onclick="goto('editor')">Edit</button>
-        <button class="btn btn-success" onclick="toast('success','Short downloaded')">Download</button>
+        <button class="btn btn-success" ${downloadAttr}>Download</button>
       </div>` : ''}
     </div>
   </div>`;
@@ -1470,11 +1473,19 @@ function bindClipOpeners(scope){
   });
 }
 
+// ============================================================
+// REAL BACKEND INTEGRATION
+// Set this to your deployed backend's URL (no trailing slash).
+// ============================================================
+const API_BASE = 'https://vidzly-backend-dpob.onrender.com';
+let REAL_CLIPS = null; // populated once a real job finishes; null = show demo clips
+
 function renderShortsGrids(){
   const landing = document.getElementById('landingShortsGrid');
   const shortsPage = document.getElementById('shortsPageGrid');
-  landing.innerHTML = CLIPS.slice(0,4).map(c=>clipCardHTML(c)).join('');
-  shortsPage.innerHTML = CLIPS.map(c=>clipCardHTML(c)).join('');
+  const source = REAL_CLIPS || CLIPS;
+  landing.innerHTML = source.slice(0,4).map(c=>clipCardHTML(c)).join('');
+  shortsPage.innerHTML = source.map(c=>clipCardHTML(c)).join('');
   bindClipOpeners(landing);
   bindClipOpeners(shortsPage);
 }
@@ -1617,11 +1628,145 @@ function markReady(name){
 }
 
 function startProcessing(){
-  goto('processing');
+  const file = fileInput.files[0];
+  const url = document.getElementById('ytUrl').value.trim();
+
+  if(!file && !url){
+    toast('info', 'Choose a video file or paste a YouTube URL first.');
+    return;
+  }
+  if(file && url){
+    toast('info', 'Using the uploaded file — clear it if you meant to use the YouTube URL instead.');
+  }
+
+  goto('processing');       // shows the screen (also kicks off the fake demo animation)
+  clearInterval(procTimer); // stop the fake demo animation — we're doing this for real now
+
+  if(file){
+    runRealProcessing(async () => {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`${API_BASE}/api/projects`, { method: 'POST', body: formData });
+      if(!res.ok){
+        const err = await res.json().catch(()=>({detail:'Upload failed.'}));
+        throw new Error(err.detail || 'Upload failed.');
+      }
+      return res.json();
+    });
+  } else {
+    runRealProcessing(async () => {
+      const res = await fetch(`${API_BASE}/api/projects/youtube`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ url }),
+      });
+      if(!res.ok){
+        const err = await res.json().catch(()=>({detail:'Could not start the YouTube download.'}));
+        const msg = Array.isArray(err.detail) ? err.detail.map(d=>d.msg).join(', ') : (err.detail || 'Could not start the YouTube download.');
+        throw new Error(msg);
+      }
+      return res.json();
+    });
+  }
 }
 
 /* ============================================================
-   PROCESSING ANIMATION
+   REAL PROCESSING — talks to the actual Vidzly backend
+   kickoff: async () => {job_id} — either the file-upload call or the
+   YouTube-URL call; everything after that (polling/painting) is shared.
+   ============================================================ */
+let realPollTimer = null;
+
+async function runRealProcessing(kickoff){
+  const steps = document.querySelectorAll('.proc-step');
+  const ring = document.getElementById('procRing');
+  const pct = document.getElementById('procPct');
+  const live = document.getElementById('procLiveText');
+  const CIRC = 452;
+
+  // backend step name -> index in the 7-step UI list
+  // (the UI has a "motion graphics" step the MVP backend doesn't do yet,
+  //  so it just gets marked done together with captioning)
+  const STEP_INDEX = {
+    uploading: 0, transcribing: 1, finding_moments: 2,
+    analyzing: 3, captioning: 4, rendering: 6, done: 6,
+  };
+  const LIVE_TEXT = {
+    uploading: 'Uploading your video securely...',
+    transcribing: 'Transcribing speech to text...',
+    finding_moments: 'Finding the strongest moments in your video...',
+    analyzing: 'Analyzing engagement and pacing...',
+    captioning: 'Writing synced, animated captions...',
+    rendering: 'Rendering final vertical clips...',
+    done: 'Your shorts are ready.',
+  };
+
+  function paint(status){
+    const idx = STEP_INDEX[status.step] ?? 0;
+    steps.forEach((s,i)=>{
+      s.className = i < idx ? 'proc-step done' : (i === idx ? 'proc-step active' : 'proc-step wait');
+    });
+    if(status.step === 'done'){
+      steps.forEach(s=>s.className='proc-step done');
+    }
+    pct.textContent = Math.round(status.progress || 0)+'%';
+    ring.style.strokeDashoffset = CIRC - (CIRC*(status.progress||0)/100);
+    live.textContent = LIVE_TEXT[status.step] || status.message || '';
+  }
+
+  try {
+    const { job_id } = await kickoff();
+
+    clearInterval(realPollTimer);
+    realPollTimer = setInterval(async ()=>{
+      try {
+        const r = await fetch(`${API_BASE}/api/projects/${job_id}`);
+        if(!r.ok) throw new Error('Lost connection to the server.');
+        const status = await r.json();
+        paint(status);
+
+        if(status.step === 'error'){
+          clearInterval(realPollTimer);
+          toast('info', status.error || 'Processing failed.');
+          goto('landing');
+          return;
+        }
+        if(status.step === 'done'){
+          clearInterval(realPollTimer);
+          REAL_CLIPS = (status.clips || []).map(c => ({
+            title: c.title,
+            dur: formatDuration(c.duration_seconds),
+            score: c.score,
+            cat: c.category,
+            downloadUrl: API_BASE + c.download_path,
+          }));
+          renderShortsGrids();
+          setTimeout(()=>{ goto('shorts'); toast('success','Your shorts are ready.'); }, 600);
+        }
+      } catch (e){
+        clearInterval(realPollTimer);
+        toast('info', 'Lost connection while checking progress: ' + e.message);
+        goto('landing');
+      }
+    }, 3000);
+
+  } catch (e){
+    toast('info', 'Could not start processing: ' + e.message);
+    goto('landing');
+  }
+}
+
+function formatDuration(totalSeconds){
+  const s = Math.round(totalSeconds || 0);
+  const m = Math.floor(s/60);
+  const r = s%60;
+  return `${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`;
+}
+
+/* ============================================================
+   PROCESSING ANIMATION (demo/fake — used only when jumping to the
+   Processing screen via the bottom prototype switcher, with no real
+   upload in progress)
    ============================================================ */
 let procTimer = null;
 function runProcessing(){
