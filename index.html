@@ -1261,14 +1261,15 @@ footer{ border-top:1px solid var(--line-1); padding:60px 0 34px; }
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
     </button>
     <div class="player-col">
-      <div class="player-frame">
-        <span class="badge-ai"><span class="spark">✦</span>AI Generated</span>
+      <div class="player-frame" id="playerFrame">
+      <template id="playerFramePlaceholder"><span class="badge-ai"><span class="spark">✦</span>AI Generated</span>
         <div style="align-self:center; font-family:var(--font-display); font-weight:800; font-size:14px; background:var(--red); color:#fff; padding:4px 9px; border-radius:6px; margin-bottom:8px;">NOBODY EXPECTED THIS</div>
         <div class="controls">
           <svg viewBox="0 0 24 24" fill="none"><path d="M6 4L20 12L6 20V4Z" fill="currentColor"/></svg>
           <div class="tl"><i></i></div>
           <svg viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H3v6h3l5 4V5z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
         </div>
+      </template>
       </div>
     </div>
     <div class="modal-info">
@@ -1439,18 +1440,21 @@ function escAttr(s){
 }
 function clipCardHTML(c, withActions=true){
   const t = escAttr(c.title);
+  const u = escAttr(c.downloadUrl || '');
   const downloadAttr = c.downloadUrl
-    ? `onclick="window.open('${c.downloadUrl}','_blank')"`
+    ? `onclick="window.open('${u}','_blank')"`
     : `onclick="toast('success','Short downloaded')"`;
+  const thumbInner = c.downloadUrl
+    ? `<video src="${u}" preload="metadata" muted playsinline style="width:100%;height:100%;object-fit:cover;position:absolute;inset:0;"></video>`
+    : `<div class="cap-line"></div><div class="cap-line w2"></div>`;
   return `
   <div class="card clip-card">
-    <div class="clip-video js-open-clip" data-title="${t}" style="cursor:pointer;">
+    <div class="clip-video js-open-clip" data-title="${t}" data-url="${u}" style="cursor:pointer;">
       <div class="top-badges">
         <span class="badge-ai"><span class="spark">✦</span>AI</span>
         <span class="badge" style="background:rgba(0,0,0,.5);"><span class="badge-dot ${c.score>=85?'green':'red'}"></span>${c.score}</span>
       </div>
-      <div class="cap-line"></div>
-      <div class="cap-line w2"></div>
+      ${thumbInner}
       <div class="play-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 4L20 12L6 20V4Z" fill="white"/></svg></div>
     </div>
     <div class="clip-body">
@@ -1460,7 +1464,7 @@ function clipCardHTML(c, withActions=true){
         <div class="mini-score"><div class="bar"><i style="width:${c.score}%; background:${c.score>=85?'var(--green)':'var(--red)'};"></i></div><b>${c.score}</b></div>
       </div>
       ${withActions ? `<div class="clip-actions">
-        <button class="btn btn-ghost js-open-clip" data-title="${t}">Preview</button>
+        <button class="btn btn-ghost js-open-clip" data-title="${t}" data-url="${u}">Preview</button>
         <button class="btn btn-ghost" onclick="goto('editor')">Edit</button>
         <button class="btn btn-success" ${downloadAttr}>Download</button>
       </div>` : ''}
@@ -1469,7 +1473,7 @@ function clipCardHTML(c, withActions=true){
 }
 function bindClipOpeners(scope){
   scope.querySelectorAll('.js-open-clip').forEach(el=>{
-    el.addEventListener('click', ()=> openModal(el.dataset.title));
+    el.addEventListener('click', ()=> openModal(el.dataset.title, el.dataset.url));
   });
 }
 
@@ -1477,7 +1481,7 @@ function bindClipOpeners(scope){
 // REAL BACKEND INTEGRATION
 // Set this to your deployed backend's URL (no trailing slash).
 // ============================================================
-const API_BASE = 'https://vidzly-backend-dpob.onrender.com';
+const API_BASE = 'https://vidzly-backend-1.onrender.com';
 let REAL_CLIPS = null; // populated once a real job finishes; null = show demo clips
 
 function renderShortsGrids(){
@@ -1819,8 +1823,16 @@ function runProcessing(){
 /* ============================================================
    MODAL
    ============================================================ */
-function openModal(title){
+function openModal(title, url){
   document.getElementById('modalTitle').textContent = title;
+  const frame = document.getElementById('playerFrame');
+  if(url){
+    frame.innerHTML = `
+      <span class="badge-ai" style="position:absolute; top:10px; left:10px; z-index:2;"><span class="spark">✦</span>AI Generated</span>
+      <video src="${url}" controls playsinline style="width:100%;height:100%;object-fit:cover;border-radius:14px;"></video>`;
+  } else {
+    frame.innerHTML = document.getElementById('playerFramePlaceholder').innerHTML;
+  }
   document.getElementById('clipModal').classList.add('show');
 }
 function closeModal(){ document.getElementById('clipModal').classList.remove('show'); }
